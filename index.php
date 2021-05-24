@@ -128,7 +128,7 @@ class ProductImporter
             if(!empty($this->collectionDataByUrl[$subUrl])) {
                 $data["tags"][] = $tagPrefixes[$key] . $this->collectionDataByUrl[$subUrl];
 
-                if($key == 2) {
+                if($key == 2 && empty($data["type"])) {
                     $data["type"] = $this->collectionDataByUrl[$subUrl];
                 }
             }
