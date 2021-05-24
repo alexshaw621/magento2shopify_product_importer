@@ -13,7 +13,8 @@ class ProductImporter
     public $magentoProducts = [];
     public $magentoCollections = [];
     public $collectionDataHeader = [];
-    public $collectionData = [];
+    public $collectionDataById = [];
+    public $collectionDataByUrl = [];
 
     function __construct()
 	{
@@ -70,8 +71,8 @@ class ProductImporter
             "Metafield: title_tag [string]"
         ];
 
-        $this->getMagentoProducts();
         $this->getCollections();
+        $this->getMagentoProducts();
     }
 
     private function getTagsFromUrl($url)
@@ -81,20 +82,59 @@ class ProductImporter
         return $tags;
     }
 
-    private function getTagsFromCategoryId($categoryIds)
+    private function getTagsType($categoryIds)
     {
-        $tags = [];
-        foreach($categoryIds as $categoryId) {
-            if(empty($this->collectionData[$categoryId])) {
-                continue;
-            }
+        $data = array(
+            "tags" => [],
+            "type" => ""
+        );
 
-            $tagsArray = explode(",", $this->collectionData[$categoryId]);
-            $tags = array_merge($tags, $tagsArray);
+        foreach($categoryIds as $categoryId) {
+            $tagsTypeData = $this->getTagsTypeFromCategoryId($categoryId);
+            $data["tags"] = array_merge($data["tags"], $tagsTypeData["tags"]);
+            $data["type"] = $tagsTypeData["type"];
         }
 
-        $tags = array_unique($tags);
-        return implode(",", $tags);
+        $data["tags"] = array_unique($data["tags"]);
+        $data["tags"] = implode(",", $data["tags"]);
+        return $data;
+    }
+
+    private function getTagsTypeFromCategoryId($categoryId)
+    {
+        $data = array(
+            "tags" => [],
+            "type" => ""
+        );
+
+        $tagPrefixes = array(
+            "landing:",
+            "category:",
+            "subcategory:",
+            "group:",
+            "material_type:"
+        );
+
+        if(empty($this->collectionDataById[$categoryId])) {
+            return $data;
+        }
+
+        $breadcrumbs = explode("/", $this->collectionDataById[$categoryId]);
+        
+        foreach($breadcrumbs as $key => $breadcrumb) {
+            $subBreadcrumbs = array_slice($breadcrumbs, 0, ($key + 1));
+            $subUrl = implode("/", $subBreadcrumbs);
+            
+            if(!empty($this->collectionDataByUrl[$subUrl])) {
+                $data["tags"][] = $tagPrefixes[$key] . $this->collectionDataByUrl[$subUrl];
+
+                if($key == 2) {
+                    $data["type"] = $this->collectionDataByUrl[$subUrl];
+                }
+            }
+        }
+        
+        return $data;
     }
 
     public function getMagentoProducts()
@@ -124,7 +164,8 @@ class ProductImporter
     {
         $row = 0;
         $this->collectionDataHeader = [];
-        $this->collectionData = [];
+        $this->collectionDataById = [];
+        $this->collectionDataByUrl = [];
 
         if (($handle = fopen("csv_files/categories.csv", "r")) !== FALSE) {
             while (($data = fgetcsv($handle, 5000, ",")) !== FALSE) {
@@ -136,14 +177,8 @@ class ProductImporter
                         $collection[$this->collectionDataHeader[$key]] = $value;
                     }
 
-                    if($collection['name'] == "Root Catalog") {
-                        $collection["tags"] = "root-catalog";
-                    } else if($collection['name'] == "Default Category") {
-                        $collection["tags"] = "default-category";
-                    } else {
-                        $collection["tags"] = $this->getTagsFromUrl($collection["url"]);
-                    }
-                    $this->collectionData[$collection["id"]] = $collection["tags"];
+                    $this->collectionDataById[$collection["id"]] = $collection["url"];
+                    $this->collectionDataByUrl[$collection["url"]] = $collection["name"];
                 }
                 $row++;
             }
@@ -159,7 +194,10 @@ class ProductImporter
         foreach($this->magentoProducts as $magentoProduct) {
             $shopifyProduct = [];
 
-            $productTags = $magentoProduct["category_ids"];
+            $productTagsType = array(
+                "tags" => "",
+                "type" => ""
+            );
             $productImage = trim($magentoProduct['image']);
             $productStatus = strtolower(trim($magentoProduct['status'])) == "enabled" ? 'Active' : 'Draft';
             $productTaxable = strtolower(trim($magentoProduct['tax_class_id'])) == "taxable goods" ? TRUE : FALSE;
@@ -172,8 +210,8 @@ class ProductImporter
                 $productImage = "https://bobmarriottsflyfishingstore.com/media/catalog/product" . $productImage;
             }
 
-            if(!empty($productTags)) {
-                $productTags = $this->getTagsFromCategoryId(explode(",", $productTags));
+            if(!empty(trim($magentoProduct["category_ids"]))) {
+                $productTagsType = $this->getTagsType(explode(",", trim($magentoProduct["category_ids"])));
             }
 
             if(!empty($magentoProduct)) {
@@ -183,8 +221,8 @@ class ProductImporter
                 $shopifyProduct["Title"] = $magentoProduct['name'];
                 $shopifyProduct["Body HTML"] = $magentoProduct['description'];
                 $shopifyProduct["Vendor"] = $magentoProduct["manufacturer"];
-                $shopifyProduct["Type"] = "";
-                $shopifyProduct["Tags"] = $productTags;
+                $shopifyProduct["Type"] = $productTagsType["type"];
+                $shopifyProduct["Tags"] = $productTagsType["tags"];
                 $shopifyProduct["Tags Command"] = "REPLACE";
                 $shopifyProduct["Created At"] = "";
                 $shopifyProduct["Updated At"] = "";
