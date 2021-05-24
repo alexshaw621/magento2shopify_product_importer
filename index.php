@@ -137,6 +137,21 @@ class ProductImporter
         return $data;
     }
 
+    private function removeInlineStyles($html)
+    {
+        $tags_to_strip = Array("font", "FONT");
+        $filteredHtml = $html;
+
+        $filteredHtml = preg_replace( '/\s*style\s*=\s*[\'][^\']*[\']/', '', stripslashes( $filteredHtml ) );
+        $filteredHtml = preg_replace( '/\s*style\s*=\s*[\"][^\"]*[\"]/', '', stripslashes( $filteredHtml ) );
+        $filteredHtml = preg_replace( '/\s*<\s*font[^<]*>/', '', stripslashes( $filteredHtml ) );
+        $filteredHtml = preg_replace( '/\s*<\/\s*font[^<]*>/', '', stripslashes( $filteredHtml ) );
+        $filteredHtml = preg_replace( '/\s*<\s*FONT[^<]*>/', '', stripslashes( $filteredHtml ) );
+        $filteredHtml = preg_replace( '/\s*<\/\s*FONT[^<]*>/', '', stripslashes( $filteredHtml ) );
+
+        return $filteredHtml;
+    }
+
     public function getMagentoProducts()
     {
         $row = 0;
@@ -219,7 +234,7 @@ class ProductImporter
                 $shopifyProduct["Handle"] = $magentoProduct['url_key'];
                 $shopifyProduct["Command"] = "MERGE";
                 $shopifyProduct["Title"] = $magentoProduct['name'];
-                $shopifyProduct["Body HTML"] = $magentoProduct['description'];
+                $shopifyProduct["Body HTML"] = $this->removeInlineStyles($magentoProduct['description']);
                 $shopifyProduct["Vendor"] = $magentoProduct["manufacturer"];
                 $shopifyProduct["Type"] = $productTagsType["type"];
                 $shopifyProduct["Tags"] = $productTagsType["tags"];
@@ -272,7 +287,7 @@ class ProductImporter
         }
     }
 
-    public function exportShopifyProducts()
+    public function exportShopifyProducts($limit = FALSE)
     {
         $columnIndex = 1;
         $spreadsheet = new Spreadsheet();
@@ -286,9 +301,19 @@ class ProductImporter
         }
 
         $rowIndex = 2;
+        $productIndex = 0;
         foreach ($this->shopifyProducts as $product)
         {
             $columnIndex = 1;
+
+            if($product["Top Row"]) {
+                $productIndex++;
+            }
+
+            if($limit !== FALSE && $productIndex >= $limit) {
+                break;
+            }
+
             foreach($product as $item) {
                 $sheet->setCellValueByColumnAndRow($columnIndex, $rowIndex, $item);
                 $columnIndex++;
@@ -304,5 +329,5 @@ class ProductImporter
 
 $productImporter = new ProductImporter();
 $productImporter->generateShopifyProducts();
-$productImporter->exportShopifyProducts();
+$productImporter->exportShopifyProducts(500);
 ?>
