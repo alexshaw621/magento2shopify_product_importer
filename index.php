@@ -82,17 +82,30 @@ class ProductImporter
         return $tags;
     }
 
+    /* Get tag and product type from category ID list */
     private function getTagsType($categoryIds)
     {
         $data = array(
             "tags" => [],
-            "type" => ""
+            "type" => "",
         );
+
+        $alternativeTypes = [];
 
         foreach($categoryIds as $categoryId) {
             $tagsTypeData = $this->getTagsTypeFromCategoryId($categoryId);
             $data["tags"] = array_merge($data["tags"], $tagsTypeData["tags"]);
             $data["type"] = $tagsTypeData["type"];
+            $alternativeTypes[] = $tagsTypeData["alternative_type"];
+        }
+
+        if(empty($data["type"])) {
+            foreach($alternativeTypes as $type) {
+                if(!empty($type)) {
+                    $data["type"] = $type;
+                    break;
+                }
+            }
         }
 
         $data["tags"] = array_unique($data["tags"]);
@@ -100,11 +113,13 @@ class ProductImporter
         return $data;
     }
 
+    /* Get tag and product type from category ID */
     private function getTagsTypeFromCategoryId($categoryId)
     {
         $data = array(
             "tags" => [],
-            "type" => ""
+            "type" => "",
+            "alternative_type" => ""
         );
 
         $tagPrefixes = array(
@@ -128,7 +143,11 @@ class ProductImporter
             if(!empty($this->collectionDataByUrl[$subUrl])) {
                 $data["tags"][] = $tagPrefixes[$key] . $this->collectionDataByUrl[$subUrl];
 
-                if($key == 2 && empty($data["type"])) {
+                if($key == 1) {
+                    $data["alternative_type"] = $this->collectionDataByUrl[$subUrl];
+                }
+
+                if($key == 2) {
                     $data["type"] = $this->collectionDataByUrl[$subUrl];
                 }
             }
@@ -137,6 +156,7 @@ class ProductImporter
         return $data;
     }
 
+    /* Remove font tags and inline styles from string */
     private function removeInlineStyles($html)
     {
         $tags_to_strip = Array("font", "FONT");
@@ -152,6 +172,7 @@ class ProductImporter
         return $filteredHtml;
     }
 
+    /* Get magento products from csv */
     public function getMagentoProducts()
     {
         $row = 0;
@@ -167,7 +188,9 @@ class ProductImporter
                     foreach($data as $key => $value) {
                         $product[$this->magentoHeaders[$key]] = $value;
                     }
-                    $this->magentoProducts[] = $product;
+                    if(trim($product["status"]) != "Disabled") {
+                        $this->magentoProducts[] = $product;
+                    }
                 }
                 $row++;
             }
@@ -175,6 +198,7 @@ class ProductImporter
         }
     }
 
+    /* Get collection data from csv */
     public function getCollections()
     {
         $row = 0;
@@ -201,44 +225,88 @@ class ProductImporter
         }
     }
 
+    /* Generate shopify products array from magento products */
     public function generateShopifyProducts()
     {
         $this->shopifyProducts = [];
         $previousProduct = "";
+        $previousProductSKU = "";
+        $currentSheetIndex = -1;
+        $currentRootProductIndex = -1;
 
         foreach($this->magentoProducts as $magentoProduct) {
-            $shopifyProduct = [];
-
             $productTagsType = array(
                 "tags" => "",
                 "type" => ""
             );
-            $productImage = trim($magentoProduct['image']);
-            $productStatus = strtolower(trim($magentoProduct['status'])) == "enabled" ? 'Active' : 'Draft';
-            $productTaxable = strtolower(trim($magentoProduct['tax_class_id'])) == "taxable goods" ? TRUE : FALSE;
-            $isTopRow = ($previousProduct == $magentoProduct['name']) ? TRUE : FALSE;
-
-            $colorOption = trim($magentoProduct['color']);
-            $sizeOption = trim($magentoProduct['size']);
-
-            if(!empty($productImage)) {
-                $productImage = "https://bobmarriottsflyfishingstore.com/media/catalog/product" . $productImage;
-            }
-
-            if(!empty(trim($magentoProduct["category_ids"]))) {
-                $productTagsType = $this->getTagsType(explode(",", trim($magentoProduct["category_ids"])));
-            }
-
             if(!empty($magentoProduct)) {
+                $productStatus = trim($magentoProduct['status']);
+
+                /* Multiple Images */
+                if(empty($productStatus) || $previousProductSKU == $magentoProduct["sku"]) {
+                    $shopifyProduct = $this->shopifyProducts[$currentSheetIndex];
+
+                    if($shopifyProduct["Top Row"] == "TRUE") {
+                        $productImages = explode(";", $shopifyProduct["Image Src"]);
+                    } else {
+                        $productImages = explode(";", $shopifyProduct["Variant Image"]);
+                    }
+                    
+                    if(!empty(trim($magentoProduct['image']))) {
+                        $productImages[] = trim($magentoProduct['image']);
+                    }
+
+                    if($shopifyProduct["Top Row"] == "TRUE") {
+                        $this->shopifyProducts[$currentSheetIndex]["Image Src"] = implode(";", $productImages);
+                    } else {
+                        $this->shopifyProducts[$currentSheetIndex]["Variant Image"] = implode(";", $productImages);
+                    }
+
+                    continue;
+                }
+
+                $productImage = trim($magentoProduct['image']);
+                $productTaxable = strtolower(trim($magentoProduct['tax_class_id'])) == "taxable goods" ? TRUE : FALSE;
+                $productPrice = trim($magentoProduct['price']);
+                $productSpecialPrice = trim($magentoProduct['special_price']);
+
+                $isTopRow = ($previousProduct == $magentoProduct['name']) ? FALSE : TRUE;
+
+                /* Add Sale Tag if there is special price */
+                if(!empty($productSpecialPrice) && $currentRootProductIndex >= 0) {
+                    $shopifyProduct = $this->shopifyProducts[$currentRootProductIndex];
+                    if(empty($shopifyProduct["Tags"])) {
+                        $this->shopifyProducts[$currentRootProductIndex]["Tags"] = "OnSale";
+                    } else {
+                        $productTags = explode(",", $shopifyProduct["Tags"]);
+                        $productTags[] = "OnSale";
+                        $productTags = array_unique($productTags);
+                        $this->shopifyProducts[$currentRootProductIndex]["Tags"] = implode(",", $productTags);
+                    }
+                }
+
+                $colorOption = trim($magentoProduct['color']);
+                $sizeOption = trim($magentoProduct['size']);
+
+                if(!empty($productImage)) {
+                    $productImage = "https://bobmarriottsflyfishingstore.com/media/catalog/product" . $productImage;
+                }
+
+                if(!empty(trim($magentoProduct["category_ids"]))) {
+                    $productTagsType = $this->getTagsType(explode(",", trim($magentoProduct["category_ids"])));
+                }
+                
+                $shopifyProduct = [];
+
                 $shopifyProduct["ID"] = "";
-                $shopifyProduct["Handle"] = $magentoProduct['url_key'];
+                $shopifyProduct["Handle"] = $isTopRow ? $magentoProduct['url_key'] : "";
                 $shopifyProduct["Command"] = "MERGE";
                 $shopifyProduct["Title"] = $magentoProduct['name'];
                 $shopifyProduct["Body HTML"] = $this->removeInlineStyles($magentoProduct['description']);
                 $shopifyProduct["Vendor"] = $magentoProduct["manufacturer"];
                 $shopifyProduct["Type"] = $productTagsType["type"];
-                $shopifyProduct["Tags"] = $productTagsType["tags"];
-                $shopifyProduct["Tags Command"] = "REPLACE";
+                $shopifyProduct["Tags"] = $isTopRow ? $productTagsType["tags"] : "";
+                $shopifyProduct["Tags Command"] = $isTopRow ? "REPLACE" : "";
                 $shopifyProduct["Created At"] = "";
                 $shopifyProduct["Updated At"] = "";
                 $shopifyProduct["Status"] = "Active";
@@ -249,7 +317,7 @@ class ProductImporter
                 $shopifyProduct["Gift Card"] = "FALSE";
                 $shopifyProduct["URL"] = "";
                 $shopifyProduct["Row #"] = "";
-                $shopifyProduct["Top Row"] = $isTopRow;
+                $shopifyProduct["Top Row"] = $isTopRow ? "TRUE" : "FALSE";
                 $shopifyProduct["Variant Inventory Item ID"] = "";
                 $shopifyProduct["Variant ID"] = "";
                 $shopifyProduct["Variant Command"] = "MERGE";
@@ -263,8 +331,8 @@ class ProductImporter
                 $shopifyProduct["Variant Image"] = !$isTopRow ? $productImage : "";
                 $shopifyProduct["Variant Weight"] = $magentoProduct["weight"];
                 $shopifyProduct["Variant Weight Unit"] = "lb";
-                $shopifyProduct["Variant Price"] = $magentoProduct["price"];
-                $shopifyProduct["Variant Compare At Price"] = "";
+                $shopifyProduct["Variant Price"] = !empty($productSpecialPrice) ? $productSpecialPrice : $productPrice;
+                $shopifyProduct["Variant Compare At Price"] = !empty($productSpecialPrice) ? $productPrice : "";
                 $shopifyProduct["Variant Taxable"] = $productTaxable;
                 $shopifyProduct["Variant Tax Code"] = "";
                 $shopifyProduct["Variant Inventory Tracker"] = "shopify";
@@ -282,11 +350,17 @@ class ProductImporter
                 $shopifyProduct["Metafield: title_tag [string]"] = $magentoProduct['meta_title'];
             
                 $this->shopifyProducts[] = $shopifyProduct;
+                $currentSheetIndex++;
+                if($isTopRow) {
+                    $currentRootProductIndex = $currentSheetIndex;
+                }
                 $previousProduct = $magentoProduct["name"];
+                $previousProductSKU = $magentoProduct["sku"];
             }
         }
     }
 
+    /* Generate excel file for products import using Matrixify */
     public function exportShopifyProducts($limit = FALSE)
     {
         $columnIndex = 1;
@@ -331,3 +405,48 @@ $productImporter = new ProductImporter();
 $productImporter->generateShopifyProducts();
 $productImporter->exportShopifyProducts(500);
 ?>
+
+
+<!doctype html>
+
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Magento Importer</title>
+    <meta name="author" content="Alex">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css" integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T" crossorigin="anonymous">
+</head>
+
+<body>
+    <div class="mt-5 px-5">
+        <?php if (!empty($productImporter->shopifyProducts)): ?>
+
+        <table class="table table-bordered">
+            <thead>
+                <th scope="col">#</th>
+                <?php foreach ($productImporter->shopifyHeaders as $head): ?>
+                    <th scope="col"><?php echo $head; ?></th>
+                <?php endforeach; ?>
+            </thead>
+            <tbody>
+                <?php $key = 1; ?>
+                <?php foreach ($productImporter->shopifyProducts as $product): ?>
+                    <?php if($key >= 1000): ?>
+                    <?php break; ?>
+                    <?php endif; ?>
+                    <tr>
+                        <th scope="row"><?php echo $key ++; ?></td>
+                        <?php foreach ($product as $product_key => $item): ?>
+                            <td><?php if ($product_key == "Body HTML"): ?><code><?php endif; ?><?php echo $item; ?><?php if ($product_key == "Body HTML"): ?></code><?php endif; ?></td>
+                        <?php endforeach; ?>
+                    </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+
+        <?php endif; ?>
+    </div>
+    
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js" integrity="sha384-JjSmVgyd0p3pXB1rRibZUAYoIIy6OrQ6VrjIEaFf/nJGzIxFDsf4x0xIM+B07jRM" crossorigin="anonymous"></script>
+</body>
+</html>
