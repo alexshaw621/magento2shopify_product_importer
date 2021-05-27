@@ -68,7 +68,11 @@ class ProductImporter
             "Image Width",
             "Image Height",
             "Image Alt Text",
-            "Metafield: title_tag [string]"
+            "Metafield: title_tag [string]",
+            "Metafield: wholesale_price [string]",
+            "Metafield: short_description [string]",
+            "Metafield: tax_class_id [string]",
+            "Metafield: keyword [string]"
         ];
 
         $this->getCollections();
@@ -225,65 +229,46 @@ class ProductImporter
         }
     }
 
+    private function checkIfSkuExists($productDetails, $sku)
+    {
+        $returnData = array(
+            "isRoot" => FALSE,
+            "variantIndex" => FALSE
+        );
+
+        if($productDetails["root"]["Variant SKU"] == $sku) {
+            $returnData["isRoot"] = TRUE;
+        } else {
+            foreach($productDetails["variants"] as $key => $variant) {
+                if($variant["Variant SKU"] == $sku) {
+                    $returnData["variantIndex"] = $key;
+                    break;
+                }
+            }
+        }
+
+        return $returnData;
+    }
+
     /* Generate shopify products array from magento products */
     public function generateShopifyProducts()
     {
         $this->shopifyProducts = [];
-        $previousProduct = "";
-        $previousProductSKU = "";
-        $currentSheetIndex = -1;
-        $currentRootProductIndex = -1;
 
         foreach($this->magentoProducts as $magentoProduct) {
             $productTagsType = array(
                 "tags" => "",
                 "type" => ""
             );
+
             if(!empty($magentoProduct)) {
-                $productStatus = trim($magentoProduct['status']);
-
-                /* Multiple Images */
-                if(empty($productStatus) || $previousProductSKU == $magentoProduct["sku"]) {
-                    $shopifyProduct = $this->shopifyProducts[$currentSheetIndex];
-
-                    if($shopifyProduct["Top Row"] == "TRUE") {
-                        $productImages = explode(";", $shopifyProduct["Image Src"]);
-                    } else {
-                        $productImages = explode(";", $shopifyProduct["Variant Image"]);
-                    }
-                    
-                    if(!empty(trim($magentoProduct['image']))) {
-                        $productImages[] = trim($magentoProduct['image']);
-                    }
-
-                    if($shopifyProduct["Top Row"] == "TRUE") {
-                        $this->shopifyProducts[$currentSheetIndex]["Image Src"] = implode(";", $productImages);
-                    } else {
-                        $this->shopifyProducts[$currentSheetIndex]["Variant Image"] = implode(";", $productImages);
-                    }
-
-                    continue;
-                }
-
+                $productName = trim($magentoProduct['name']);
+                $isConfigurable = trim($magentoProduct['type']) == "configurable" ? TRUE : FALSE;
                 $productImage = trim($magentoProduct['image']);
                 $productTaxable = strtolower(trim($magentoProduct['tax_class_id'])) == "taxable goods" ? TRUE : FALSE;
                 $productPrice = trim($magentoProduct['price']);
                 $productSpecialPrice = trim($magentoProduct['special_price']);
-
-                $isTopRow = ($previousProduct == $magentoProduct['name']) ? FALSE : TRUE;
-
-                /* Add Sale Tag if there is special price */
-                if(!empty($productSpecialPrice) && $currentRootProductIndex >= 0) {
-                    $shopifyProduct = $this->shopifyProducts[$currentRootProductIndex];
-                    if(empty($shopifyProduct["Tags"])) {
-                        $this->shopifyProducts[$currentRootProductIndex]["Tags"] = "OnSale";
-                    } else {
-                        $productTags = explode(",", $shopifyProduct["Tags"]);
-                        $productTags[] = "OnSale";
-                        $productTags = array_unique($productTags);
-                        $this->shopifyProducts[$currentRootProductIndex]["Tags"] = implode(",", $productTags);
-                    }
-                }
+                $productStatus = trim($magentoProduct['status']);
 
                 $colorOption = trim($magentoProduct['color']);
                 $sizeOption = trim($magentoProduct['size']);
@@ -292,21 +277,58 @@ class ProductImporter
                     $productImage = "https://bobmarriottsflyfishingstore.com/media/catalog/product" . $productImage;
                 }
 
+                $productDetails = array(
+                    "root" => FALSE,
+                    "isSale" => FALSE,
+                    "images" => [],
+                    "variants" => []
+                );
+
+                if(isset($this->shopifyProducts[$productName])) {
+                    $productDetails = $this->shopifyProducts[$productName];
+                }
+
+                
+                $skuInProductDetails = $this->checkIfSkuExists($productDetails, $magentoProduct["sku"]);
+
+                /* Multiple Images */
+                if(empty($productStatus)) {
+                    if($skuInProductDetails["isRoot"] != FALSE || $skuInProductDetails["variantIndex"] != FALSE) {
+                        if($skuInProductDetails["isRoot"]) {
+                            if(!empty($productImage)) {
+                                $productDetails["images"][] = $productImage;
+                            }
+                        } elseif($skuInProductDetails["variantIndex"]) {
+                            $variantImages = explode(";", $productDetails["variants"][$skuInProductDetails["variantIndex"]]["Variant Image"]);
+    
+                            if(!empty($productImage)) {
+                                $variantImages[] = $productImage;
+                            }
+    
+                            $productDetails["variants"][$skuInProductDetails["variantIndex"]]["Variant Image"] = implode(";", $variantImages);
+                        }
+    
+                        $this->shopifyProducts[$productName] = $productDetails;
+                    }
+
+                    continue;
+                } 
+
                 if(!empty(trim($magentoProduct["category_ids"]))) {
                     $productTagsType = $this->getTagsType(explode(",", trim($magentoProduct["category_ids"])));
                 }
-                
+
                 $shopifyProduct = [];
 
                 $shopifyProduct["ID"] = "";
-                $shopifyProduct["Handle"] = $isTopRow ? $magentoProduct['url_key'] : "";
+                $shopifyProduct["Handle"] = $magentoProduct['url_key'];
                 $shopifyProduct["Command"] = "MERGE";
-                $shopifyProduct["Title"] = $magentoProduct['name'];
+                $shopifyProduct["Title"] = $productName;
                 $shopifyProduct["Body HTML"] = $this->removeInlineStyles($magentoProduct['description']);
                 $shopifyProduct["Vendor"] = $magentoProduct["manufacturer"];
                 $shopifyProduct["Type"] = $productTagsType["type"];
-                $shopifyProduct["Tags"] = $isTopRow ? $productTagsType["tags"] : "";
-                $shopifyProduct["Tags Command"] = $isTopRow ? "REPLACE" : "";
+                $shopifyProduct["Tags"] = $productTagsType["tags"];
+                $shopifyProduct["Tags Command"] = "REPLACE";
                 $shopifyProduct["Created At"] = "";
                 $shopifyProduct["Updated At"] = "";
                 $shopifyProduct["Status"] = "Active";
@@ -317,7 +339,7 @@ class ProductImporter
                 $shopifyProduct["Gift Card"] = "FALSE";
                 $shopifyProduct["URL"] = "";
                 $shopifyProduct["Row #"] = "";
-                $shopifyProduct["Top Row"] = $isTopRow ? "TRUE" : "FALSE";
+                $shopifyProduct["Top Row"] = "TRUE";
                 $shopifyProduct["Variant Inventory Item ID"] = "";
                 $shopifyProduct["Variant ID"] = "";
                 $shopifyProduct["Variant Command"] = "MERGE";
@@ -328,7 +350,7 @@ class ProductImporter
                 $shopifyProduct["Variant Position"] = "";
                 $shopifyProduct["Variant SKU"] = $magentoProduct["sku"];
                 $shopifyProduct["Variant Barcode"] = "";
-                $shopifyProduct["Variant Image"] = !$isTopRow ? $productImage : "";
+                $shopifyProduct["Variant Image"] = $productImage;
                 $shopifyProduct["Variant Weight"] = $magentoProduct["weight"];
                 $shopifyProduct["Variant Weight Unit"] = "lb";
                 $shopifyProduct["Variant Price"] = !empty($productSpecialPrice) ? $productSpecialPrice : $productPrice;
@@ -341,21 +363,33 @@ class ProductImporter
                 $shopifyProduct["Variant Requires Shipping"] = "";
                 $shopifyProduct["Variant Inventory Qty"] = $magentoProduct["qty"];
                 $shopifyProduct["Variant Inventory Adjust"] = "";
-                $shopifyProduct["Image Src"] = $isTopRow ? $productImage : "";
+                $shopifyProduct["Image Src"] = "";
                 $shopifyProduct["Image Command"] = "";
                 $shopifyProduct["Image Position"] = "";
                 $shopifyProduct["Image Width"] = "";
                 $shopifyProduct["Image Height"] = "";
                 $shopifyProduct["Image Alt Text"] = "";
                 $shopifyProduct["Metafield: title_tag [string]"] = $magentoProduct['meta_title'];
-            
-                $this->shopifyProducts[] = $shopifyProduct;
-                $currentSheetIndex++;
-                if($isTopRow) {
-                    $currentRootProductIndex = $currentSheetIndex;
+                $shopifyProduct["Metafield: wholesale_price [string]"] = $magentoProduct['cost'];
+                $shopifyProduct["Metafield: short_description [string]"] = $magentoProduct['short_description'];
+                $shopifyProduct["Metafield: tax_class_id [string]"] = $magentoProduct['tax_class_id'];
+                $shopifyProduct["Metafield: keyword [string]"] = $magentoProduct['meta_keyword'];
+
+                if(!$productDetails["isSale"] && !empty($productSpecialPrice)) {
+                    $productDetails["isSale"] = TRUE;
                 }
-                $previousProduct = $magentoProduct["name"];
-                $previousProductSKU = $magentoProduct["sku"];
+
+                if($isConfigurable) {
+                    $productDetails["root"] = $shopifyProduct;
+
+                    if(!empty($productImage)) {
+                        $productDetails["images"][] = $productImage;
+                    }
+                } else {
+                    $productDetails["variants"][] = $shopifyProduct;
+                }
+
+                $this->shopifyProducts[$productName] = $productDetails;
             }
         }
     }
@@ -375,25 +409,75 @@ class ProductImporter
         }
 
         $rowIndex = 2;
-        $productIndex = 0;
-        foreach ($this->shopifyProducts as $product)
-        {
-            $columnIndex = 1;
 
-            if($product["Top Row"]) {
-                $productIndex++;
-            }
-
+        foreach ($this->shopifyProducts as $productIndex => $productDetails) {
             if($limit !== FALSE && $productIndex >= $limit) {
                 break;
             }
 
-            foreach($product as $item) {
-                $sheet->setCellValueByColumnAndRow($columnIndex, $rowIndex, $item);
-                $columnIndex++;
+            $hasRootProduct = ($productDetails["root"] != FALSE);
+
+            if($hasRootProduct) {
+                $productDetails["root"]["Top Row"] = "TRUE";
+                if($productDetails["isSale"]) {
+                    if(empty($productDetails["root"]["Tags"])) {
+                        $productDetails["root"]["Tags"] = "Onsale";
+                    } else {
+                        $productDetails["root"]["Tags"] .= ",Onsale";
+                    }
+                }
+
+                $productDetails["root"]["Image Src"] .= implode(";", $productDetails["images"]);
+
+                $columnIndex = 1;
+                foreach($productDetails["root"] as $item) {
+                    $sheet->setCellValueByColumnAndRow($columnIndex, $rowIndex, $item);
+                    $columnIndex++;
+                }
+                $rowIndex++;
+
+                foreach ($productDetails["variants"] as $variant) {
+                    $variant["Handle"] = $productDetails["root"]["Handle"];
+                    $variant["Tags"] = $productDetails["root"]["Tags"];
+                    $variant["Type"] = $productDetails["root"]["Type"];
+                    $variant["Top Row"] = "";
+
+                    $columnIndex = 1;
+
+                    foreach ($variant as $product_key => $item) {
+                        $sheet->setCellValueByColumnAndRow($columnIndex, $rowIndex, $item);
+                        $columnIndex++;
+                    }
+
+                    $rowIndex++;
+                }
+            } else {
+                foreach ($productDetails["variants"] as $variantIndex => $variant) {
+                    if($productDetails["isSale"]) {
+                        if(empty($variant["Tags"])) {
+                            $variant["Tags"] = "Onsale";
+                        } else {
+                            $variant["Tags"] .= ",Onsale";
+                        }
+                    }
+
+                    if($variantIndex == 0) {
+                        $variant["Top Row"] = "TRUE";
+                    } else {
+                        $variant["Top Row"] = "";
+                    }
+
+                    $columnIndex = 1;
+
+                    foreach ($variant as $product_key => $item) {
+                        $sheet->setCellValueByColumnAndRow($columnIndex, $rowIndex, $item);
+                        $columnIndex++;
+                    }
+
+                    $rowIndex++;
+                }
             }
 
-            $rowIndex++;
         }
 
         $writer = new Xlsx($spreadsheet);
@@ -423,23 +507,71 @@ $productImporter->exportShopifyProducts(500);
 
         <table class="table table-bordered">
             <thead>
-                <th scope="col">#</th>
                 <?php foreach ($productImporter->shopifyHeaders as $head): ?>
                     <th scope="col"><?php echo $head; ?></th>
                 <?php endforeach; ?>
             </thead>
             <tbody>
-                <?php $key = 1; ?>
-                <?php foreach ($productImporter->shopifyProducts as $product): ?>
-                    <?php if($key >= 1000): ?>
-                    <?php break; ?>
-                    <?php endif; ?>
-                    <tr>
-                        <th scope="row"><?php echo $key ++; ?></td>
-                        <?php foreach ($product as $product_key => $item): ?>
-                            <td><?php if ($product_key == "Body HTML"): ?><code><?php endif; ?><?php echo $item; ?><?php if ($product_key == "Body HTML"): ?></code><?php endif; ?></td>
+                <?php foreach ($productImporter->shopifyProducts as $productIndex => $productDetails): ?>
+                    <?php
+                        if($productIndex >= 500) {
+                            break;
+                        }
+                        $hasRootProduct = ($productDetails["root"] != FALSE);
+                    ?>
+
+                    <?php if($hasRootProduct): ?>
+                        <?php
+                            $productDetails["root"]["Top Row"] = "TRUE";
+                            if($productDetails["isSale"]) {
+                                if(empty($productDetails["root"]["Tags"])) {
+                                    $productDetails["root"]["Tags"] = "Onsale";
+                                } else {
+                                    $productDetails["root"]["Tags"] .= ",Onsale";
+                                }
+                            }
+                            $productDetails["root"]["Image Src"] .= implode(";", $productDetails["images"]);
+                        ?>
+                        <tr>
+                            <?php foreach ($productDetails["root"] as $product_key => $item): ?>
+                                <?php if ($product_key == "Body HTML"): ?>
+                                    <td><code><?php echo substr(strip_tags($item),0, 100) . "..."; ?></code></td>
+                                <?php else: ?>
+                                    <td><?php echo $item; ?></td>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </tr>
+
+                        <?php foreach ($productDetails["variants"] as $variant): ?>
+                            <?php
+                                $variant["Handle"] = $productDetails["root"]["Handle"];
+                                $variant["Tags"] = $productDetails["root"]["Tags"];
+                                $variant["Type"] = $productDetails["root"]["Type"];
+                                $variant["Top Row"] = "";
+                            ?>
+                            <tr>
+                                <?php foreach ($variant as $product_key => $item): ?>
+                                    <?php if ($product_key == "Body HTML"): ?>
+                                        <td><code><?php echo substr(strip_tags($item),0, 100) . "..."; ?></code></td>
+                                    <?php else: ?>
+                                        <td><?php echo $item; ?></td>
+                                    <?php endif; ?>
+                                <?php endforeach; ?>
+                            </tr>
                         <?php endforeach; ?>
-                    </tr>
+                    <?php else: ?>
+                        <?php foreach ($productDetails["variants"] as $variant): ?>
+                            <tr>
+                                <?php foreach ($variant as $product_key => $item): ?>
+                                    <?php if ($product_key == "Body HTML"): ?>
+                                        <td><code><?php echo substr(strip_tags($item),0, 100) . "..."; ?></code></td>
+                                    <?php else: ?>
+                                        <td><?php echo $item; ?></td>
+                                    <?php endif; ?>
+                                <?php endforeach; ?>
+                            </tr>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 <?php endforeach; ?>
             </tbody>
         </table>
